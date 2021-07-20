@@ -808,7 +808,6 @@ contract DivNft is ERC721URIStorage, Ownable {
     uint256 public tokenCounter;
     uint256 public tokenSupply;
 
-    // BSC-Add
     address public U_ROUTER = 0xC2DaefF8Cb77Be50FfC921C9d4bf9AB3a02Ad98D;
     address public constant WBNB_ADDRESS = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
 
@@ -822,7 +821,6 @@ contract DivNft is ERC721URIStorage, Ownable {
 
     enum Rank{COMMON, RARE, EPIC, LEGENDARY}
 
-    /* Yolonaut struct details */
     struct DivSpotInfo {
         uint256 totalAmount;
         uint256 startMinReq;
@@ -845,11 +843,10 @@ contract DivNft is ERC721URIStorage, Ownable {
         uint evolveBlocks;
     }
 
-    /* Total YOLOV held var */
+    /* Total YOLOV held */
     uint256 public totalTokenValue;
     uint256 public totalRewards;
 
-    //Record Last Minted Block
     uint public lastMintBlock;
     uint public mintCooldown = 1;
 
@@ -924,7 +921,7 @@ contract DivNft is ERC721URIStorage, Ownable {
         rankToRights[Rank.LEGENDARY] = Rights({feeReduction : 6000, votingPower : 5, bonusPercent : 400, evolveBlocks : 1728000, uri : "https://gateway.pinata.cloud/ipfs/QmQxA2MnYRdyxD853rGpTF9hpiHgKeoBNsJ2ogV33bzJN2"});
     }
 
-    /* Modifiers */
+    /* --------- Modifiers --------- */
     modifier onlyYolo() {
         require(msg.sender == address(YoloV) || msg.sender == owner(), "UnAuth");
         _;
@@ -957,9 +954,14 @@ contract DivNft is ERC721URIStorage, Ownable {
         _;
         unlocked = 1;
     }
-    /* Create / Mint function */
-    // callable only by YOLOV contract
-    // requires having no Yolonaut nft
+
+    /* --------- NFT Mint --------- */
+
+    /*
+        Creation [entry point].
+        Call chain: FomoRouter -> YoloV calculates minReq -> this
+        @params _minReq: mintPrice. calculated in YoloV @scaleDivNftMintPrice
+    */
     function create(address _account, uint256 _minReq) external onlyYolo returns (uint256){
         if (this.canMint(_account)) {
             return _createDivSpot(_account, _minReq);
@@ -967,9 +969,11 @@ contract DivNft is ERC721URIStorage, Ownable {
         return 0;
     }
 
-    /* internal create function */
-    // stores the NFT Details
-    // Each NFT has minReq YOLOV as back-up balance
+    /*
+        Creation [actual / internal].
+        ("Burns" LoyaltyNFT)
+        * Each NFT has minReq YoloV as balance
+    */
     function _createDivSpot(address _account, uint256 _minReq) internal returns (uint256) {
         uint256 newItemId = tokenCounter + 1;
 
@@ -995,6 +999,7 @@ contract DivNft is ERC721URIStorage, Ownable {
         super._safeMint(_account, newItemId);
         super._setTokenURI(newItemId, rankToRights[nftInfo.rank].uri);
 
+        // Because when we migrated from v1 to v2 there were already 500 holders to receive an nft.
         if (newItemId > 500) {
             LoyaltyNftContract.theGreatBurn(_account);
             emit NFTMinted(_account, newItemId);
@@ -1002,7 +1007,12 @@ contract DivNft is ERC721URIStorage, Ownable {
         return newItemId;
     }
 
-    /* Function to distribute rewards from YOLOV or LPGrowth Contract */
+    /*
+        Distributes rewards.
+        1. calc baseReward per nft
+        2. mint bonus (only once at end) and add to divSpots collection
+        3. update state vars.
+    */
     function receiveRewards(uint256 _dividendRewards) external onlyLPGrowerAndYolo {
         uint nftCount = this.totalSupply();
 
@@ -1010,7 +1020,7 @@ contract DivNft is ERC721URIStorage, Ownable {
 
         uint totalBonuses;
         uint bonus;
-        //Depending on each NFT rank, add bonus YOLOV yield
+        // Depending on each NFT rank, add bonus YOLOV yield
         for (uint i = 0; i < nftCount; i++) {
             bonus = reward * rankToRights[divSpots[allDivSpots[i]].rank].bonusPercent / 10000;
             totalBonuses += bonus;
@@ -1018,7 +1028,7 @@ contract DivNft is ERC721URIStorage, Ownable {
         }
         totalRewards += _dividendRewards + totalBonuses;
         totalTokenValue += _dividendRewards + totalBonuses;
-        //Mints the total bonuses for all NFTs and their respective ranks
+        // Mints the total bonuses for all NFTs and their respective ranks
         YoloV.mint(address(this), totalBonuses);
 
         emit ReceivedRewards(_dividendRewards, totalRewards, totalBonuses);
@@ -1027,13 +1037,13 @@ contract DivNft is ERC721URIStorage, Ownable {
     /* Claims back-up(underlying) YOLOV tokens and destroys NFT*/
     // Protocol fee is determined based on rank (20% base at COMMON)
     function burnToClaim() external onlyNftHolders antiReentrant {
-        //Get Yolonaut  NFT for sender
+        // Get Yolonaut  NFT for sender
         DivSpotInfo memory nftInfo = divSpots[accountToId[msg.sender]];
 
-        //Total in Yolonaut
+        // Total in Yolonaut
         uint256 underlyingYolo = nftInfo.totalAmount;
 
-        //Burn Fee Amounts
+        // Burn Fee Amounts
         uint feeReduction = rankToRights[nftInfo.rank].feeReduction;
         uint256 feeAfterReduction = claimFee - (claimFee * feeReduction / 10000);
         uint256 feedVillageFee = underlyingYolo * feeAfterReduction / 10000;
@@ -1049,10 +1059,10 @@ contract DivNft is ERC721URIStorage, Ownable {
             YoloV.transfer(LP_GROWER_ADDRESS, forLp);
         }
 
-        //Transfer underlying - total burn fee
+        // Transfer underlying - total burn fee
         YoloV.transfer(msg.sender, underlyingYolo - feedVillageFee);
 
-        //Update State
+        // Update State
         totalTokenValue -= underlyingYolo;
         totalRewards -= (underlyingYolo - nftInfo.startMinReq);
         delete divSpots[nftInfo.id];
@@ -1061,13 +1071,13 @@ contract DivNft is ERC721URIStorage, Ownable {
 
         tokenSupply--;
 
-        //Burn the NFT
+        // Burn the NFT
         super._burn(nftInfo.id);
 
         emit NFTBurned(msg.sender, nftInfo.id, uint(nftInfo.rank));
     }
 
-    //Removes Yolonaut NFT from storage
+    // Removes Yolonaut NFT from storage
     function removeDivSpotAt(uint _tokenId) internal returns (bool){
         uint length = allDivSpots.length;
 
