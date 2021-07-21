@@ -834,7 +834,7 @@ contract DivNft is ERC721URIStorage, Ownable {
     // index to tokenId
     uint[] public allDivSpots;
 
-    /* Rights(perks) for ranks */
+    /* Each rank has Rights(perks) */
     struct Rights {
         uint feeReduction;
         uint votingPower;
@@ -852,7 +852,6 @@ contract DivNft is ERC721URIStorage, Ownable {
 
     /* Claim Fee Distribution */
     uint public claimFee = 2000; // 20%
-
     uint public FOR_FOMO_FUND = 4000;
     uint public FOR_LP = 6000;
 
@@ -959,8 +958,8 @@ contract DivNft is ERC721URIStorage, Ownable {
 
     /*
         Creation [entry point].
-        Call chain: FomoRouter -> YoloV calculates minReq -> this
-        @params _minReq: mintPrice. calculated in YoloV @scaleDivNftMintPrice
+        Call chain: FomoRouter -> YoloV calculates minReq -> this function.
+        @params _minReq: mintPrice. Calculated in YoloV @scaleDivNftMintPrice.
     */
     function create(address _account, uint256 _minReq) external onlyYolo returns (uint256){
         if (this.canMint(_account)) {
@@ -1034,21 +1033,22 @@ contract DivNft is ERC721URIStorage, Ownable {
         emit ReceivedRewards(_dividendRewards, totalRewards, totalBonuses);
     }
 
-    /* Claims back-up(underlying) YOLOV tokens and destroys NFT*/
-    // Protocol fee is determined based on rank (20% base at COMMON)
+    /*
+        Claims underlying YoloV tokens and destroys NFT.
+        This function is the way to "leaveVillage" and get the your yield & initial investment.
+        * Protocol fee is determined based on rank (20% base at COMMON)
+    */
     function burnToClaim() external onlyNftHolders antiReentrant {
-        // Get Yolonaut  NFT for sender
         DivSpotInfo memory nftInfo = divSpots[accountToId[msg.sender]];
 
-        // Total in Yolonaut
         uint256 underlyingYolo = nftInfo.totalAmount;
 
-        // Burn Fee Amounts
+        // Fee Amounts
         uint feeReduction = rankToRights[nftInfo.rank].feeReduction;
         uint256 feeAfterReduction = claimFee - (claimFee * feeReduction / 10000);
         uint256 feedVillageFee = underlyingYolo * feeAfterReduction / 10000;
 
-        // Distribute burn fees
+        // Distribute fees
         if (FOR_FOMO_FUND > 0) {
             uint forFomo = feedVillageFee * FOR_FOMO_FUND / 10000;
             YoloV.burn(forFomo);
@@ -1059,10 +1059,10 @@ contract DivNft is ERC721URIStorage, Ownable {
             YoloV.transfer(LP_GROWER_ADDRESS, forLp);
         }
 
-        // Transfer underlying - total burn fee
+        // Transfer underlying - total fee
         YoloV.transfer(msg.sender, underlyingYolo - feedVillageFee);
 
-        // Update State
+        // State Updates
         totalTokenValue -= underlyingYolo;
         totalRewards -= (underlyingYolo - nftInfo.startMinReq);
         delete divSpots[nftInfo.id];
@@ -1071,13 +1071,15 @@ contract DivNft is ERC721URIStorage, Ownable {
 
         tokenSupply--;
 
-        // Burn the NFT
         super._burn(nftInfo.id);
 
         emit NFTBurned(msg.sender, nftInfo.id, uint(nftInfo.rank));
     }
 
-    // Removes Yolonaut NFT from storage
+    /*
+        Removes a _tokenId from allDivSpots array
+        by shifting the elements after the target by 1 index backwards then popping the final element.
+    */
     function removeDivSpotAt(uint _tokenId) internal returns (bool){
         uint length = allDivSpots.length;
 
@@ -1102,15 +1104,13 @@ contract DivNft is ERC721URIStorage, Ownable {
         return found;
     }
 
-    /* Increases the rank of yolonaut nft*/
-    //Based on blocktime
+    /* Increases the rank of yolonaut nft. Based on blocks passed since mint. */
     function evolve() external onlyNftHolders antiReentrant returns (bool){
         return _evolve(msg.sender);
     }
 
 
-    /* internal evolution */
-    // performs required evolution checks
+    /* Internal evolution. Evolves the NFT to the maximum rank possible. */
     function _evolve(address _account) internal returns (bool){
         DivSpotInfo memory nftInfo = divSpots[accountToId[_account]];
         require(nftInfo.rank != Rank.LEGENDARY, "Already LEGENDARY ! Bows.");
@@ -1123,7 +1123,7 @@ contract DivNft is ERC721URIStorage, Ownable {
 
         Rights memory currRights;
 
-        //Gets MAX rank possible
+        // Gets MAX rank possible
         for (uint i = uint(Rank.LEGENDARY); i >= nextRankNumber; i--) {
             currRights = rankToRights[Rank(i)];
             if (block.number >= nftInfo.mintBlock + currRights.evolveBlocks) {
@@ -1138,7 +1138,7 @@ contract DivNft is ERC721URIStorage, Ownable {
         return false;
     }
 
-    //Getter if NFT from _account is able to evolve (passed required blocktime)
+    /* Requirement: certain amount of blocks (different for each rank - see constructor) to have passed since mint. */
     function canEvolve(address _account) public view returns (bool _canEvolve) {
         DivSpotInfo memory nftInfo = divSpots[accountToId[_account]];
         require(nftInfo.rank != Rank.LEGENDARY, "Already LEGENDARY ! Bows.");
@@ -1149,14 +1149,22 @@ contract DivNft is ERC721URIStorage, Ownable {
         return block.number >= nftInfo.mintBlock + nextRights.evolveBlocks;
     }
 
-    /* Speed Up Evolution block-time */
-    // Requires Approval from msg.sender to this contract of at least _yoloAmountForFund
-    // Spend YOLOV to reduce block-time between ranks
+    /*
+        Speeds Up the evolution block-time for a Yolonaut NFT.
+        1. Checks if _yoloAmountForFund > 0.33 BNB (min amount) & calculates reduction @getReductionBlocksPerYolo.
+        2. Try evolve.
+        3. Increase speedup amount inside storage mapping speedsters.
+        4. Optionally mints a simple Speedster NFT (just art) if speedUp amount > 14.4 BNB\
+        * All Speedsters have already been minted (25 total)
+        5. Transfers to the rewardFund of YoloV.
+        * YoloV receives rewards by first burning the tokens then minting everytime a reward distribution gets triggered.
+        * Requires Approval from msg.sender to this contract of at least _yoloAmountForFund.
+    */
     function speedUpEvolution(uint256 _yoloAmountForFund) external onlyNftHolders antiReentrant returns (uint256 newMintBlock){
         DivSpotInfo memory nftInfo = divSpots[accountToId[msg.sender]];
         require(nftInfo.rank != Rank.LEGENDARY, "Already Max Rank");
 
-        // Will revert if token amounts < 0.33 BNB
+        // Reverts if _yoloAmountForFund < 0.33 BNB
         // 1BNB / 0.01 --> 100 * 864 = 3 days
         (uint blocksToSpeedUp, uint bnb) = getReductionBlocksPerYolo(_yoloAmountForFund);
         divSpots[nftInfo.id].mintBlock -= blocksToSpeedUp;
@@ -1195,8 +1203,10 @@ contract DivNft is ERC721URIStorage, Ownable {
         return divSpots[nftInfo.id].mintBlock;
     }
 
-    /* Create Speedster NFT */
-    // If speedster supply < 25 && speedup amount > 14.4 BNB (in YOLOV)
+    /*
+        Speedster NFT Creation.
+        If speedster supply < 25 && speedup amount > 14.4 BNB (in YoloV)
+    */
     function _createSpeedster(address _account, uint256 _amountBnb, uint _divSpotId) internal {
         SpeedsterInfo memory nftInfo = SpeedsterInfo({
         amount : _amountBnb,
@@ -1213,7 +1223,10 @@ contract DivNft is ERC721URIStorage, Ownable {
         emit SpeedUp(_account, _amountBnb);
     }
 
-    /*Get how much blocks will be reduced per _yoloAmount provided*/
+    /*
+        Returns the blocks reduction for a certain _yoloAmount. Called by @speedUpEvolution.
+        0.01 BNB = 1200 blocks @SPEEDUP_BLOCK_PER_BNB.
+    */
     function getReductionBlocksPerYolo(uint _yoloAmount) public view returns (uint blocksReduced, uint bnb) {
         bnb = uRouter.getAmountsOut(_yoloAmount, pathToBnb)[1];
 
@@ -1223,7 +1236,10 @@ contract DivNft is ERC721URIStorage, Ownable {
         return (blocksReduced, bnb);
     }
 
-    /* UNUSED FOR NOW */
+    /*
+        Resets the Speedster race by choosing 3 winners. This is a function used by DEVs for giveaways and other perks.
+        Hasn't been used yet.
+    */
     function concludeSpeedsterCycle(address[3] calldata _top3) external onlyOwner {
         historyWinners[speedCycle].push(speedsters[accountToId[_top3[0]]]);
         historyWinners[speedCycle].push(speedsters[accountToId[_top3[1]]]);
@@ -1253,9 +1269,13 @@ contract DivNft is ERC721URIStorage, Ownable {
         _transfer(_from, _to, _nftId);
     }
 
-    /* Perform a check if _account is able to mint YOLONAUT */
-    // Checks if _account has loyalty nft RECRUIT rank
-    // And if token supply < 500 and last block mint cooldown (max 1 mint per block)
+    /*
+       Requirements:
+       1. One per block
+       2. NFT balance = 0
+       3. LoyaltyNftContract.canEvolveToDiv = account holds a Loyalty NFT rank0 (Recruit)
+       * First 500 were migrated from v1.
+    */
     function canMint(address _account) public view returns (bool) {
         if (super.balanceOf(_account) == 0) {
             if (
@@ -1275,8 +1295,7 @@ contract DivNft is ERC721URIStorage, Ownable {
         return divSpots[accountToId[_account]];
     }
 
-    /* GETTERS EXTERNAL */
-    /* Total Supply */
+    /* --------- GETTERS EXTERNAL --------- */
     function totalSupply() public view returns (uint){
         return tokenSupply;
     }
@@ -1288,6 +1307,7 @@ contract DivNft is ERC721URIStorage, Ownable {
     function getOpenDivSpotsCount() external view returns (uint){
         return 500 - this.totalSupply();
     }
+
     /* Returns the blocks until next evolution rank */
     function getBlocksTillFullEvolution(uint256 _tokenId) external view returns (uint256) {
         uint endAt = divSpots[_tokenId].mintBlock + rankToRights[divSpots[_tokenId].rank].evolveBlocks;
@@ -1416,12 +1436,6 @@ contract DivNft is ERC721URIStorage, Ownable {
     // Can be called only from Owner and LPGrowth Contract
     // Serves as additional yield booster if needed
     function syncFund() external onlyLpGrowerAndOwner returns (bool)  {
-
-        //TODO:: totalTokensValue = variable
-        //    :: .balanceOf() = real tracker after _transfer _to address(thi)
-        //    :: sync reserve to match .balanceOf
-
-        // -> uint diff = totalTokenValue - YoloDraw.balanceOf(address(this)); <-
 
         if (totalTokenValue > YoloV.balanceOf(address(this))) {
             totalTokenValue = YoloV.balanceOf(address(this));

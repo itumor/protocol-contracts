@@ -906,7 +906,7 @@ contract ArtefactsNft is ERC721URIStorage, Ownable {
 
     /*
         Removes a tokenId from @accountToArtifacts[_account] array
-        by shifting the elements after the target by 1 index backwards then pops final element.
+        by shifting the elements after the target by 1 index backwards then popping the final element.
     */
     function removeArtifactAt(address _account, uint _tokenId) internal returns (bool){
         uint length = accountToArtifacts[_account].length;
